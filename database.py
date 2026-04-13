@@ -79,7 +79,16 @@ class Database:
     def get_requests_by_user_role(self, user_role: str, user_id: int = None, status_filter: str = None) -> List[Dict]:
         """Получение заявок в зависимости от роли пользователя"""
 
-        if user_role == 'Менеджер':
+        if user_role == 'Администратор':
+            query = """
+                SELECT r.requestid, r.startdate, r.hometechtype, r.hometechmodel,
+                       r.problemdescryption, r.requeststatus, r.completiondate,
+                       r.repairparts, u.fio as master_name, c.fio as client_name
+                FROM repair_requests r
+                LEFT JOIN users u ON r.masterid = u.userid
+                JOIN users c ON r.clientid = c.userid
+            """
+        elif user_role == 'Менеджер':
             query = """
                 SELECT r.requestid, r.startdate, r.hometechtype, r.hometechmodel,
                        r.problemdescryption, r.requeststatus, r.completiondate,
@@ -121,7 +130,10 @@ class Database:
             return []
 
         if status_filter:
-            query += f" WHERE r.requeststatus = '{status_filter}'"
+            if "WHERE" in query.upper():
+                query += f" AND r.requeststatus = '{status_filter}'"
+            else:
+                query += f" WHERE r.requeststatus = '{status_filter}'"
         query += " ORDER BY r.startdate DESC"
 
         result = self.execute_query(query)
@@ -141,7 +153,7 @@ class Database:
         return []
 
     def get_all_requests(self, status_filter: str = None) -> List[Dict]:
-        """Получение всех заявок (для менеджера и оператора)"""
+        """Получение всех заявок"""
         query = """
             SELECT r.requestid, r.startdate, r.hometechtype, r.hometechmodel,
                    r.problemdescryption, r.requeststatus, r.completiondate,
@@ -224,15 +236,63 @@ class Database:
         return []
 
     def get_all_users(self) -> List[Dict]:
-        """Получение всех пользователей (для менеджера)"""
+        """Получение всех пользователей"""
         query = "SELECT userid, fio, type FROM users ORDER BY userid"
         result = self.execute_query(query)
         if result:
             return [{'userid': row[0], 'fio': row[1], 'type': row[2]} for row in result]
         return []
 
+    def create_user(self, fio: str, phone: str, login: str, password: str, user_type: str) -> Optional[int]:
+        """Создание нового пользователя (только для администратора)"""
+        query = """
+            INSERT INTO users (fio, phone, login, password, type) 
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING userid
+        """
+        result = self.execute_query(query, (fio, phone, login, password, user_type))
+        if result:
+            return result[0][0]
+        return None
+
+    def update_user(self, user_id: int, fio: str = None, phone: str = None,
+                    login: str = None, password: str = None, user_type: str = None) -> bool:
+        """Обновление данных пользователя (только для администратора)"""
+        updates = []
+        params = []
+
+        if fio:
+            updates.append("fio = %s")
+            params.append(fio)
+        if phone:
+            updates.append("phone = %s")
+            params.append(phone)
+        if login:
+            updates.append("login = %s")
+            params.append(login)
+        if password:
+            updates.append("password = %s")
+            params.append(password)
+        if user_type:
+            updates.append("type = %s")
+            params.append(user_type)
+
+        if not updates:
+            return False
+
+        params.append(user_id)
+        query = f"UPDATE users SET {', '.join(updates)} WHERE userid = %s"
+        self.execute_query(query, tuple(params))
+        return True
+
+    def delete_user(self, user_id: int) -> bool:
+        """Удаление пользователя (только для администратора)"""
+        query = "DELETE FROM users WHERE userid = %s AND type != 'Администратор'"
+        self.execute_query(query, (user_id,))
+        return True
+
     def delete_request(self, request_id: int) -> bool:
-        """Удаление заявки (только для менеджера)"""
+        """Удаление заявки"""
         query = "DELETE FROM repair_requests WHERE requestid = %s"
         self.execute_query(query, (request_id,))
         return True
@@ -269,6 +329,14 @@ class Database:
                     'total': row[1],
                     'completed': row[2] or 0
                 })
+
+        result = self.execute_query("SELECT COUNT(*) FROM users")
+        stats['total_users'] = result[0][0] if result else 0
+
+        result = self.execute_query(
+            "SELECT COUNT(*) FROM repair_requests WHERE requeststatus = 'Новая заявка'"
+        )
+        stats['new_requests'] = result[0][0] if result else 0
 
         return stats
 
